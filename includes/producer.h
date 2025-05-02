@@ -1,9 +1,8 @@
-#include "message.h"
-#include "message_queue.h"
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/sem.h>
-#include <string.h>
-#include "semaphore_utils.h"
+#ifndef PRODUCER_H
+#define PRODUCER_H
 
-void producer(message_queue* q, int sem_empty, int sem_fill, int sem_mutex);
+#include "queue.h"
+
+void producer(Queue* queue);
+
+#endif 

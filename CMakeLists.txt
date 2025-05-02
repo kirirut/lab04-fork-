@@ -13,11 +13,10 @@ include_directories(includes)
 # Source files
 set(SOURCES
     src/main.c
-    src/message.c
-    src/message_queue.c
     src/producer.c
     src/consumer.c
-    src/semaphore_utils.c
+    src/message.c
+    src/signal_utils.c
 )
 
 # Create the executable

@@ -1,37 +1,53 @@
 #include "producer.h"
-#include "globals.h"
-void producer(message_queue* q, int sem_empty, int sem_fill, int sem_mutex) {
-    unsigned int seed = time(NULL) ^ getpid();
-    while(q->run) {        
-        sem_P(sem_empty);           // ждем, пока будет место
-        sem_P(sem_mutex);           // входим в критическую секцию
+#include "sync.h"
+#include "message.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <signal.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <sys/sem.h>
+#include "signal_utils.h"
 
-        if (!q->run) {
-            sem_V(sem_mutex);
-            sem_V(sem_empty);
+void producer(Queue* queue) {
+    int semid = queue->semid;
+    signal(SIGTERM, sigterm_handler);
+    srand(time(NULL) + getpid());
+
+    while (!sigterm_received) {
+        Message msg;
+        msg.type = rand() % 256;
+        msg.size = rand() % 256;
+        for (int i = 0; i < msg.size; i++) {
+            msg.data[i] = rand() % 256;
+        }
+        msg.hash = compute_hash(&msg);
+
+        struct sembuf sops[2] = {{EMPTY, -1, 0}, {MUTEX, -1, 0}};
+        if (semop(semid, sops, 2) == -1) continue;
+
+        if (sigterm_received) {
+            struct sembuf rollback = {MUTEX, 1, 0};
+            semop(semid, &rollback, 1);
             break;
         }
 
-        message msg;
-        generate_message(&msg, &seed);
-        
-        if (q->free_space == 0) {
-            sem_V(sem_mutex);
-            sem_V(sem_empty);
-            break;
-        }
+        memcpy(&queue->messages[queue->tail], &msg, sizeof(Message));
+        queue->tail = (queue->tail + 1) % QUEUE_SIZE;
+        queue->added_count++;
+        queue->free_space--;
 
-        enqueue(q, &msg);  // просто добавляем сообщение
-
-        int count = q->added_messages;
-
-        sem_V(sem_mutex);  // выходим из критической секции
-        sem_V(sem_fill);   // сообщаем, что появилось новое сообщение
+        struct sembuf unlock[2] = {{MUTEX, 1, 0}, {FULL, 1, 0}};
+        semop(semid, unlock, 2);
 
         printf("Produced message %d: type=%d, size=%d, hash=%u\n",
-               count, msg.type, msg.size, msg.hash);
-        fflush(stdout);
+               queue->added_count,
+               msg.type,
+               msg.size,
+               msg.hash);
 
-        sleep(1);
+        struct timespec ts = {1, 0};
+        nanosleep(&ts, NULL);
     }
 }

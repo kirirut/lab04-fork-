@@ -1,42 +1,49 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/sem.h>
 #include "consumer.h"
+#include "sync.h"
+#include "message.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <signal.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <sys/sem.h>
+#include "signal_utils.h"
 
-uint16_t recalculate_hash(const message* msg) {
-    uint16_t checksum = 0;
-    checksum += msg->type;
-    checksum += msg->size;
-    for (int i = 0; i < msg->size; ++i) {
-        checksum += msg->data[i];
-    }
-    return checksum;
-}
 
-void consumer(message_queue* q, int sem_empty, int sem_fill, int sem_mutex) {
-    while (q->run) {
-        sem_P(sem_fill);    // Ожидаем, пока есть элементы в очереди
-        sem_P(sem_mutex);   // Блокируем очередь для извлечения элемента
+void consumer(Queue* queue) {
+    int semid = queue->semid;
+    signal(SIGTERM, sigterm_handler);
+    srand(time(NULL) + getpid());
 
-        if (!q->run) {      // Если очередь не работает, выходим
-            sem_V(sem_mutex);
+    while (!sigterm_received) {
+        struct sembuf sops[2] = {{FULL, -1, 0}, {MUTEX, -1, 0}};
+        if (semop(semid, sops, 2) == -1) continue;
+
+        if (sigterm_received) {
+            struct sembuf rollback = {MUTEX, 1, 0};
+            semop(semid, &rollback, 1);
             break;
         }
 
-        message msg = dequeue(q);   // Извлекаем сообщение из очереди
-        int count = q->removed_messages;  // Получаем количество удаленных сообщений
+        Message msg;
+        memcpy(&msg, &queue->messages[queue->head], sizeof(Message));
+        queue->head = (queue->head + 1) % QUEUE_SIZE;
+        queue->removed_count++;
+        queue->free_space++;
 
-        sem_V(sem_mutex);   // Освобождаем семафор после работы с очередью
-        sem_V(sem_empty);   // Увеличиваем количество пустых мест в очереди
+        struct sembuf unlock[2] = {{MUTEX, 1, 0}, {EMPTY, 1, 0}};
+        semop(semid, unlock, 2);
 
-        uint16_t actual_hash = recalculate_hash(&msg);  // Пересчитываем хеш
-        int is_valid = (actual_hash == msg.hash);        // Проверяем валидность хеша
-
+        uint16_t computed_hash = compute_hash(&msg);
         printf("Consumed message %d: type=%d, size=%d, hash=%u — %s\n",
-               count, msg.type, msg.size, msg.hash,
-               is_valid ? "OK" : "CORRUPTED");
+               queue->removed_count,
+               msg.type,
+               msg.size,
+               msg.hash,
+               (computed_hash == msg.hash) ? "OK" : "ERROR");
 
-        fflush(stdout);
-        sleep(1);  // Пауза для имитации обработки
-    }
+        struct timespec ts = {1, 0};
+        nanosleep(&ts, NULL);
+    } 
 }
